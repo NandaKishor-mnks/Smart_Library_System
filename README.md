@@ -22,7 +22,7 @@ A web-based Smart Library Management System developed to digitally manage librar
 ## Technologies Used
 
 - HTML5
-- CSS3
+- CSS
 - JavaScript
 - Firebase Authentication
 - Firebase Cloud Firestore
