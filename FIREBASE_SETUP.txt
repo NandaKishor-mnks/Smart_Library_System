@@ -1,0 +1,26 @@
+SMART LIBRARY - FIREBASE CONNECTED VERSION
+
+Firebase project: smart-library-cb978
+
+Enabled services expected:
+1. Authentication -> Sign-in method -> Email/Password -> Enabled
+2. Cloud Firestore -> Database (default) -> Created
+
+How to run:
+- Extract the folder.
+- Open it in VS Code.
+- Run index.html with Live Server (recommended), or use start_smart_library.bat.
+
+Important:
+- Existing UI and buttons are preserved from the working project.
+- LocalStorage remains the fast local cache.
+- After a Firebase-authenticated user logs in, the current library state is synced to Firestore collection: library / state.
+- Forgot Password uses Firebase Auth and sends a reset email.
+- First login of the included demo accounts attempts to provision them in Firebase Auth automatically; if Firebase Auth is unavailable, the local demo login still works so the UI does not break.
+
+Demo accounts:
+Admin/Staff: admin@university.edu / admin123
+Student: student@university.edu / student123
+Teacher: teacher@university.edu / teacher123
+
+If you deploy publicly, replace Firestore test rules with proper authenticated/role-based rules before production use.

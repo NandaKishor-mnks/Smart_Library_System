@@ -1,0 +1,36 @@
+SMART LIBRARY V24
+==================
+
+Laptop QR camera
+----------------
+1. Keep this folder together.
+2. On Windows, double-click start_smart_library.bat.
+3. Open http://localhost:5500 in Chrome/Edge.
+4. Sign in as staff and open Scan & Circulate.
+5. Allow camera permission.
+6. Select the built-in laptop webcam or USB webcam, then Start Camera.
+
+Why localhost?
+--------------
+Browsers normally block camera access from file:// pages. Localhost is treated as a secure context for camera APIs.
+
+V24 features
+------------
+- Teacher workspace and teacher account role.
+- Teacher book catalog, requests, My Books and account.
+- Admin Popular Books panel based on live borrowing/request activity.
+- Laptop/USB camera selector for QR scanning.
+- Existing QR deep links, Book ID, barcode and ISBN lookup are preserved.
+- Windows launcher: start_smart_library.bat (requires Python).
+
+
+V24 FIX
+-------
+Admin and Teacher now use separate role-isolated workspaces. Teacher login cannot load the Admin workspace.
+The package includes index.html, style.css, script.js, this setup file and the Windows launcher.
+
+Student portal security
+-----------------------
+- Students do not have a Due & Fines navigation option.
+- Due/fine management routes are blocked for student accounts.
+- Due-date editing remains available only in the staff/admin circulation workspace.

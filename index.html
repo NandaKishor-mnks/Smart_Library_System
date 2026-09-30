@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Library — Future-ready library workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+</head>
+<body>
+<div id="toast" aria-live="polite" aria-atomic="true"></div>
+
+<section id="loginScreen" class="login-screen">
+  <div class="login-brand">
+    <div class="brand-mark">SL</div>
+    <div><b>Smart Library</b><span>University Digital Library</span></div>
+  </div>
+  <div class="login-card">
+    <div class="login-copy">
+      <span class="eyebrow">SMART LIBRARY PLATFORM</span>
+      <h1>Library management,<br><strong>made intelligent.</strong></h1>
+      <p>Manage students, books, borrowing, reminders, analytics and reports from one university-ready interface.</p>
+</div>
+    <div class="login-form-wrap">
+      <h2>Sign in</h2>
+      <p class="muted">Access your library workspace</p>
+      <form id="loginForm">
+        <label>Email</label>
+        <input id="loginEmail" type="email" placeholder="you@university.edu" required>
+        <label>Password</label>
+        <input id="loginPassword" type="password" placeholder="••••••••" required>
+        <button class="primary full" type="submit">Sign in <span>→</span></button>
+      </form>
+      <button class="forgot-password-link" id="forgotPasswordBtn" type="button" onclick="forgotPassword()">Forgot Password?</button>
+      <button class="ghost full" id="showRegister">Create Student Account</button>
+      <button class="ghost full" id="showTeacherRegister">Create Teacher Account</button>
+      <small class="muted">Frontend demo uses local browser storage. No real credentials are transmitted.</small>
+    </div>
+  </div>
+</section>
+
+<div id="app" class="app hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">SL</div>
+      <div><b>Smart Library</b><span>Smart Library</span></div>
+    </div>
+    <div class="role-chip" id="roleChip">STAFF</div>
+    <nav id="nav"></nav>
+    <div class="sidebar-bottom">
+      <button class="nav-item logout" id="logoutBtn"><span>↪</span> Sign out</button>
+    </div>
+  </aside>
+
+  <div id="sidebarOverlay" class="sidebar-overlay" aria-hidden="true"></div>
+  <main class="main">
+    <header class="topbar">
+      <button class="mobile-menu" id="mobileMenu">☰</button>
+      <button class="top-search" id="globalSearchTrigger" type="button" aria-label="Open quick search"><span>⌕</span><input id="globalSearch" placeholder="Search students, books, IDs..." autocomplete="off"><span class="command-hint">⌘K</span></button>
+      <div class="top-actions">
+        <button class="icon-btn theme-icon" id="themeBtn" title="Switch to dark mode" aria-label="Switch to dark mode">☾</button><button class="icon-btn" id="notifBtn" title="Notifications" aria-label="Notifications">🔔<i id="notifCount">0</i></button>
+        <div class="user-mini"><div class="avatar" id="avatar">M</div><div><b id="topName">Library User</b><span id="topRole">Staff</span></div></div>
+      </div>
+    </header>
+    <div id="content" class="content"></div>
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<script src="script.js"></script>
+<script src="firebase-bridge.js"></script>
+</body>
+</html>
