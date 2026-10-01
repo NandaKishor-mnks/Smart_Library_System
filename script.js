@@ -135,23 +135,10 @@ function normalizeStatuses(){
   saveDB();
 }
 async function boot(){
- // Load the latest database from Firebase before running any local reconciliation.
- if(window.firebaseDb){
-   try{
-     const snapshot=await window.firebaseDb.collection("library").doc("state").get();
-     if(snapshot.exists && snapshot.data()?.data){
-       const cloud=snapshot.data().data;
-       if(Array.isArray(cloud.users) && Array.isArray(cloud.books)){
-         window.setLibraryDB(cloud);
-         console.log("Library data loaded from Firebase");
-       }
-     }else{
-       console.log("No Firebase library state found. Initial database will be uploaded.");
-     }
-   }catch(error){
-     console.error("Firebase load failed. Using local cache:",error);
-   }
- }
+ // Do not read Firestore before Firebase Authentication. Firestore rules require
+ // request.auth != null. The authoritative cloud database is loaded after login
+ // by firebase-bridge.js.
+ console.log("Smart Library: waiting for Firebase authentication before cloud load");
 
  reconcileInventory();
  normalizeStatuses();

@@ -205,24 +205,28 @@
   --------------------------------------------------------- */
 
   async function loadCloudStateAfterAuth() {
-    if (!cloudReady() || !window.firebaseAuth.currentUser) return null;
+    if (!cloudReady()) {
+      throw new Error('Firebase is not initialized.');
+    }
+
+    if (!window.firebaseAuth.currentUser) {
+      throw new Error('Firebase authentication is not active.');
+    }
 
     try {
       const snapshot = await window.firebaseDb
         .collection('library')
         .doc('state')
-        .get();
+        .get({ source: 'server' });
 
       if (!snapshot.exists || !snapshot.data()?.data) {
-        console.warn('Firebase library/state does not exist yet.');
-        return null;
+        throw new Error('Firestore document library/state was not found.');
       }
 
       const cloud = snapshot.data().data;
 
       if (!Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
-        console.warn('Firebase library/state has an invalid database structure.');
-        return null;
+        throw new Error('Firestore library/state contains an invalid database structure.');
       }
 
       if (typeof window.setLibraryDB === 'function') {
@@ -235,7 +239,7 @@
       return cloud;
     } catch (error) {
       console.error('Firebase cloud database load after login failed:', error);
-      return null;
+      throw error;
     }
   }
 
@@ -244,130 +248,40 @@
   --------------------------------------------------------- */
 
   async function firebaseLogin(email, password) {
-
     if (!cloudReady()) return false;
 
     try {
+      const credential = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
 
-      const credential =
-        await window.firebaseAuth
-          .signInWithEmailAndPassword(
-            email,
-            password
-          );
-
-      const existingUser =
-        localUser(email);
-
-      // Authenticate first, then read Firestore. This is important
-      // on phones/new browsers where Firestore reads may require auth.
+      // Authentication succeeded. Do NOT fall back to localStorage if the
+      // Firestore read fails; doing so could display stale phone data and then
+      // overwrite the cloud database with that stale data.
       const cloud = await loadCloudStateAfterAuth();
-      const cloudUser = Array.isArray(cloud?.users)
-        ? cloud.users.find(u => String(u.email || '').trim().toLowerCase() === email)
-        : null;
+      const cloudUser = cloud.users.find(
+        u => String(u.email || '').trim().toLowerCase() === String(email).trim().toLowerCase()
+      );
 
-      if (cloudUser) {
-        openWithUser({ ...cloudUser, uid: credential.user.uid, id: cloudUser.id ?? credential.user.uid });
-      } else if (existingUser) {
-        openWithUser({ ...existingUser, uid: credential.user.uid });
-      } else {
-        const firebaseUser = credential.user;
-        openWithUser({
-          id: firebaseUser.uid,
-          uid: firebaseUser.uid,
-          email: firebaseUser.email,
-          name: firebaseUser.displayName || email.split('@')[0],
-          role: 'student',
-          active: true
-        });
+      if (!cloudUser) {
+        throw new Error('Firebase login succeeded, but this account is not present in library/state.');
       }
 
+      openWithUser({
+        ...cloudUser,
+        uid: credential.user.uid,
+        id: cloudUser.id ?? credential.user.uid
+      });
+
+      // Keep the separate Firebase collections in sync after the authoritative
+      // state has been loaded. The main database remains library/state.
       await syncDatabaseToFirebase();
       return true;
 
     } catch (error) {
-
-      console.warn(
-        'Firebase login:',
-        error
+      console.error('Firebase login/cloud load failed:', error);
+      safeToast(
+        `Firebase sync failed: ${error?.message || 'Unable to load cloud database.'}`,
+        'error'
       );
-
-      /*
-        First login of an existing demo/local account.
-      */
-
-      const local =
-        localPass(email, password);
-
-      if (local) {
-
-        try {
-
-          const credential =
-            await window.firebaseAuth
-              .createUserWithEmailAndPassword(
-                email,
-                password
-              );
-
-          if (credential.user) {
-
-            await credential.user
-              .updateProfile({
-                displayName:
-                  local.name || ''
-              })
-              .catch(() => {});
-
-            openWithUser({
-              ...local,
-              uid: credential.user.uid,
-              id: credential.user.uid
-            });
-
-            await syncDatabaseToFirebase();
-
-            return true;
-          }
-
-        } catch (createError) {
-
-          if (
-            createError?.code ===
-            'auth/email-already-in-use'
-          ) {
-
-            try {
-
-              const login =
-                await window.firebaseAuth
-                  .signInWithEmailAndPassword(
-                    email,
-                    password
-                  );
-
-              const cloud = await loadCloudStateAfterAuth();
-              const cloudUser = Array.isArray(cloud?.users)
-                ? cloud.users.find(u => String(u.email || '').trim().toLowerCase() === email)
-                : null;
-
-              openWithUser({
-                ...(cloudUser || local),
-                uid: login.user.uid,
-                id: cloudUser?.id ?? login.user.uid
-              });
-
-              await syncDatabaseToFirebase();
-
-              return true;
-
-            } catch (loginError) {
-              console.warn(loginError);
-            }
-          }
-        }
-      }
-
       return false;
     }
   }
@@ -444,21 +358,8 @@
             );
 
           if (!success) {
-
-            const local =
-              localPass(
-                email,
-                password
-              );
-
-            if (local) {
-              openWithUser(local);
-            } else {
-              safeToast(
-                'Invalid email or password.',
-                'error'
-              );
-            }
+            // When Firebase is configured, keep the user on the login screen
+            // instead of silently opening an old local database.
           }
 
         } finally {
