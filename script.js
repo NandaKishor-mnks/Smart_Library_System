@@ -46,6 +46,16 @@ const seed={
  ]
 };
 var db=loadDB(), currentUser=null, chartRefs={};
+// Keep the application database shared with firebase-bridge.js.
+window.db = db;
+window.getLibraryDB = function(){ return db; };
+window.setLibraryDB = function(cloud){
+  if(!cloud || typeof cloud !== "object") return false;
+  db = cloud;
+  window.db = db;
+  try{ localStorage.setItem(KEY, JSON.stringify(db)); }catch(e){}
+  return true;
+};
 function loadDB(){
  try{
   let x=JSON.parse(localStorage.getItem(KEY));
@@ -56,6 +66,9 @@ function loadDB(){
  }catch{return structuredClone(seed)}
 }
 async function saveDB(){
+  // Keep the global reference synchronized for the Firebase bridge.
+  window.db = db;
+
   // localStorage is only a browser cache.
   localStorage.setItem(KEY,JSON.stringify(db));
 
@@ -79,6 +92,7 @@ window.addEventListener("storage",e=>{
     const incoming=JSON.parse(e.newValue);
     if(!incoming||!Array.isArray(incoming.loans)||!Array.isArray(incoming.books)||!Array.isArray(incoming.students))return;
     db=incoming;
+    window.db = db;
     reconcileInventory();
     normalizeStatuses();
     const page=document.querySelector('.nav-item.active')?.dataset.page||'dashboard';
@@ -128,8 +142,7 @@ async function boot(){
      if(snapshot.exists && snapshot.data()?.data){
        const cloud=snapshot.data().data;
        if(Array.isArray(cloud.users) && Array.isArray(cloud.books)){
-         db=cloud;
-         localStorage.setItem(KEY,JSON.stringify(db));
+         window.setLibraryDB(cloud);
          console.log("Library data loaded from Firebase");
        }
      }else{

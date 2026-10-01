@@ -12,7 +12,10 @@
   };
 
   const localUser = (email) => {
-    const users = Array.isArray(window.db?.users) ? window.db.users : [];
+    const source = typeof window.getLibraryDB === 'function'
+      ? window.getLibraryDB()
+      : window.db;
+    const users = Array.isArray(source?.users) ? source.users : [];
 
     return users.find(
       u =>
@@ -78,7 +81,9 @@
     if (!cloudReady() || !window.db) return;
 
     try {
-      const db = window.db;
+      const db = typeof window.getLibraryDB === 'function'
+        ? window.getLibraryDB()
+        : window.db;
 
       /* Users → students / teachers */
       if (Array.isArray(db.users)) {
@@ -191,6 +196,50 @@
   }
 
   /* ---------------------------------------------------------
+     LOAD CLOUD STATE AFTER FIREBASE AUTHENTICATION
+
+     Firestore rules commonly require an authenticated user.
+     The first version tried to read library/state before login,
+     which can fail on a new phone/browser. We therefore load the
+     authoritative cloud database immediately after Firebase login.
+  --------------------------------------------------------- */
+
+  async function loadCloudStateAfterAuth() {
+    if (!cloudReady() || !window.firebaseAuth.currentUser) return null;
+
+    try {
+      const snapshot = await window.firebaseDb
+        .collection('library')
+        .doc('state')
+        .get();
+
+      if (!snapshot.exists || !snapshot.data()?.data) {
+        console.warn('Firebase library/state does not exist yet.');
+        return null;
+      }
+
+      const cloud = snapshot.data().data;
+
+      if (!Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
+        console.warn('Firebase library/state has an invalid database structure.');
+        return null;
+      }
+
+      if (typeof window.setLibraryDB === 'function') {
+        window.setLibraryDB(cloud);
+      } else {
+        window.db = cloud;
+      }
+
+      console.log('Firebase: authoritative library database loaded after login');
+      return cloud;
+    } catch (error) {
+      console.error('Firebase cloud database load after login failed:', error);
+      return null;
+    }
+  }
+
+  /* ---------------------------------------------------------
      FIREBASE LOGIN
   --------------------------------------------------------- */
 
@@ -210,27 +259,30 @@
       const existingUser =
         localUser(email);
 
-      if (existingUser) {
-        openWithUser(existingUser);
+      // Authenticate first, then read Firestore. This is important
+      // on phones/new browsers where Firestore reads may require auth.
+      const cloud = await loadCloudStateAfterAuth();
+      const cloudUser = Array.isArray(cloud?.users)
+        ? cloud.users.find(u => String(u.email || '').trim().toLowerCase() === email)
+        : null;
+
+      if (cloudUser) {
+        openWithUser({ ...cloudUser, uid: credential.user.uid, id: cloudUser.id ?? credential.user.uid });
+      } else if (existingUser) {
+        openWithUser({ ...existingUser, uid: credential.user.uid });
       } else {
-
-        const firebaseUser =
-          credential.user;
-
+        const firebaseUser = credential.user;
         openWithUser({
           id: firebaseUser.uid,
           uid: firebaseUser.uid,
           email: firebaseUser.email,
-          name:
-            firebaseUser.displayName ||
-            email.split('@')[0],
+          name: firebaseUser.displayName || email.split('@')[0],
           role: 'student',
           active: true
         });
       }
 
       await syncDatabaseToFirebase();
-
       return true;
 
     } catch (error) {
@@ -294,10 +346,15 @@
                     password
                   );
 
+              const cloud = await loadCloudStateAfterAuth();
+              const cloudUser = Array.isArray(cloud?.users)
+                ? cloud.users.find(u => String(u.email || '').trim().toLowerCase() === email)
+                : null;
+
               openWithUser({
-                ...local,
+                ...(cloudUser || local),
                 uid: login.user.uid,
-                id: login.user.uid
+                id: cloudUser?.id ?? login.user.uid
               });
 
               await syncDatabaseToFirebase();
@@ -493,7 +550,7 @@
       if (
         snapshot.exists &&
         snapshot.data()?.data &&
-        window.db
+        (typeof window.getLibraryDB === 'function' || window.db)
       ) {
 
         const cloud =
@@ -504,12 +561,15 @@
           Array.isArray(cloud.books)
         ) {
 
-          window.db = cloud;
-
-          localStorage.setItem(
-            'munvarSmartLibraryV3',
-            JSON.stringify(cloud)
-          );
+          if (typeof window.setLibraryDB === 'function') {
+            window.setLibraryDB(cloud);
+          } else {
+            window.db = cloud;
+            localStorage.setItem(
+              'munvarSmartLibraryV3',
+              JSON.stringify(cloud)
+            );
+          }
 
           if (
             typeof window.route ===
