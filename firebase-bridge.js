@@ -152,29 +152,11 @@
   }
 
   /* ---------------------------------------------------------
-     KEEP EXISTING saveDB FUNCTION
+     DATABASE SAVING
+
+     script.js now writes the complete database directly to
+     Firestore at library/state. No second save wrapper is needed.
   --------------------------------------------------------- */
-
-  const originalSaveDB = window.saveDB;
-
-  window.saveDB = function () {
-
-    const result =
-      originalSaveDB?.apply(this, arguments);
-
-    /*
-      LocalStorage remains the immediate cache.
-      Firebase sync happens separately.
-    */
-
-    if (cloudReady() && window.currentUser) {
-      setTimeout(() => {
-        syncDatabaseToFirebase();
-      }, 100);
-    }
-
-    return result;
-  };
 
   /* ---------------------------------------------------------
      OPEN USER
@@ -553,14 +535,9 @@
   --------------------------------------------------------- */
 
   function start() {
-
+    // Login/forgot-password bridge only.
+    // Database loading is handled by script.js boot().
     installLogin();
-
-    setTimeout(() => {
-
-      loadCloudState();
-
-    }, 1200);
   }
 
   if (

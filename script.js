@@ -55,7 +55,23 @@ function loadDB(){
   return data;
  }catch{return structuredClone(seed)}
 }
-function saveDB(){localStorage.setItem(KEY,JSON.stringify(db))}
+async function saveDB(){
+  // localStorage is only a browser cache.
+  localStorage.setItem(KEY,JSON.stringify(db));
+
+  // Firestore is the primary database.
+  if(window.firebaseDb){
+    try{
+      await window.firebaseDb.collection("library").doc("state").set({
+        data: db,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      console.log("Library database saved to Firebase");
+    }catch(error){
+      console.error("Firebase save failed:",error);
+    }
+  }
+}
 // Keep multiple open student/admin tabs on the same live library database.
 window.addEventListener("storage",e=>{
   if(e.key!==KEY||!e.newValue)return;
@@ -104,7 +120,26 @@ function normalizeStatuses(){
   });
   saveDB();
 }
-function boot(){
+async function boot(){
+ // Load the latest database from Firebase before running any local reconciliation.
+ if(window.firebaseDb){
+   try{
+     const snapshot=await window.firebaseDb.collection("library").doc("state").get();
+     if(snapshot.exists && snapshot.data()?.data){
+       const cloud=snapshot.data().data;
+       if(Array.isArray(cloud.users) && Array.isArray(cloud.books)){
+         db=cloud;
+         localStorage.setItem(KEY,JSON.stringify(db));
+         console.log("Library data loaded from Firebase");
+       }
+     }else{
+       console.log("No Firebase library state found. Initial database will be uploaded.");
+     }
+   }catch(error){
+     console.error("Firebase load failed. Using local cache:",error);
+   }
+ }
+
  reconcileInventory();
  normalizeStatuses();
  const saved=localStorage.getItem("munvarCurrentUser") || sessionStorage.getItem("smartLibrarySession");
