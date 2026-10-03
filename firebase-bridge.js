@@ -247,22 +247,99 @@
      FIREBASE LOGIN
   --------------------------------------------------------- */
 
+  async function findProfileInCollections(email) {
+    const normalized = String(email || '').trim().toLowerCase();
+    const names = ['students', 'teachers', 'admins'];
+
+    for (const name of names) {
+      try {
+        const snap = await window.firebaseDb.collection(name)
+          .where('email', '==', normalized).limit(1).get();
+        if (!snap.empty) return { collection: name, profile: snap.docs[0].data() };
+      } catch (error) {
+        console.warn(`Firebase profile lookup failed for ${name}:`, error);
+      }
+    }
+    return null;
+  }
+
+  async function repairMissingLibraryUser(cloud, email, cachedUser) {
+    const normalized = String(email || '').trim().toLowerCase();
+    let profile = null;
+
+    // First use a profile already stored in a Firebase collection.
+    const cloudProfile = await findProfileInCollections(normalized);
+    if (cloudProfile?.profile) profile = { ...cloudProfile.profile };
+
+    // If the account was created on this browser before the Firebase bridge was
+    // installed, recover its library profile from the local cache.
+    if (!profile && cachedUser) profile = { ...cachedUser };
+
+    if (!profile) return null;
+
+    profile.email = normalized;
+    profile.uid = window.firebaseAuth.currentUser?.uid || profile.uid;
+    if (!profile.id) profile.id = profile.uid;
+
+    if (!Array.isArray(cloud.users)) cloud.users = [];
+    const index = cloud.users.findIndex(
+      u => String(u.email || '').trim().toLowerCase() === normalized
+    );
+
+    if (index >= 0) cloud.users[index] = { ...cloud.users[index], ...profile };
+    else cloud.users.push(profile);
+
+    // Also restore the student record when it exists in the local cache.
+    if (String(profile.role || '').toLowerCase() === 'student' && cachedUser && Array.isArray(window.getLibraryDB?.()?.students)) {
+      const cachedDb = window.getLibraryDB();
+      const student = cachedDb.students.find(s =>
+        String(s.email || '').trim().toLowerCase() === normalized ||
+        String(s.studentId || '') === String(profile.studentId || '')
+      );
+      if (student) {
+        if (!Array.isArray(cloud.students)) cloud.students = [];
+        const si = cloud.students.findIndex(s => String(s.email || '').trim().toLowerCase() === normalized);
+        if (si >= 0) cloud.students[si] = { ...cloud.students[si], ...student };
+        else cloud.students.push(student);
+      }
+    }
+
+    await window.firebaseDb.collection('library').doc('state').set({
+      data: cloud,
+      updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    if (typeof window.setLibraryDB === 'function') window.setLibraryDB(cloud);
+    else window.db = cloud;
+
+    return cloud.users.find(
+      u => String(u.email || '').trim().toLowerCase() === normalized
+    );
+  }
+
   async function firebaseLogin(email, password) {
     if (!cloudReady()) return false;
 
     try {
+      // Keep the browser cache before loading the authoritative cloud state so
+      // an account created in an older version can be repaired automatically.
+      const cachedUser = localUser(email);
       const credential = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
 
-      // Authentication succeeded. Do NOT fall back to localStorage if the
-      // Firestore read fails; doing so could display stale phone data and then
-      // overwrite the cloud database with that stale data.
       const cloud = await loadCloudStateAfterAuth();
-      const cloudUser = cloud.users.find(
+      let cloudUser = cloud.users.find(
         u => String(u.email || '').trim().toLowerCase() === String(email).trim().toLowerCase()
       );
 
+      // Firebase Auth and the library profile are two separate records. If Auth
+      // succeeds but the library profile is missing, repair the profile instead
+      // of showing the confusing "not present" error.
       if (!cloudUser) {
-        throw new Error('Firebase login succeeded, but this account is not present in library/state.');
+        cloudUser = await repairMissingLibraryUser(cloud, email, cachedUser);
+      }
+
+      if (!cloudUser) {
+        throw new Error('Firebase account found, but no library profile exists for this email. Please create the account from the Smart Library registration form.');
       }
 
       openWithUser({
@@ -271,8 +348,6 @@
         id: cloudUser.id ?? credential.user.uid
       });
 
-      // Keep the separate Firebase collections in sync after the authoritative
-      // state has been loaded. The main database remains library/state.
       await syncDatabaseToFirebase();
       return true;
 
