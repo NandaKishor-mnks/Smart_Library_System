@@ -213,188 +213,34 @@
       throw new Error('Firebase authentication is not active.');
     }
 
-    const email = String(window.firebaseAuth.currentUser.email || '').trim().toLowerCase();
-    const localDB =
-      typeof window.getLibraryDB === 'function'
-        ? window.getLibraryDB()
-        : window.db;
-
-    let cloud = null;
-
     try {
       const snapshot = await window.firebaseDb
         .collection('library')
         .doc('state')
         .get({ source: 'server' });
 
-      if (snapshot.exists && snapshot.data()?.data) {
-        cloud = snapshot.data().data;
+      if (!snapshot.exists || !snapshot.data()?.data) {
+        throw new Error('Firestore document library/state was not found.');
       }
-    } catch (error) {
-      console.warn('Firestore library/state read failed:', error);
-    }
 
-    /*
-     * IMPORTANT:
-     * Older versions of this project created the account in browser
-     * localStorage but did not put the newly-created user into Firestore.
-     * That is why Firebase Auth could succeed while library/state did not
-     * contain the account.
-     *
-     * When that happens, migrate the local profile into the cloud database
-     * once. After the migration, every phone/laptop uses library/state.
-     */
-    if (!cloud || !Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
-      if (
-        localDB &&
-        Array.isArray(localDB.users) &&
-        Array.isArray(localDB.books)
-      ) {
-        cloud = structuredClone(localDB);
+      const cloud = snapshot.data().data;
+
+      if (!Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
+        throw new Error('Firestore library/state contains an invalid database structure.');
+      }
+
+      if (typeof window.setLibraryDB === 'function') {
+        window.setLibraryDB(cloud);
       } else {
-        throw new Error('Firestore library/state was not found and no local library database is available.');
+        window.db = cloud;
       }
+
+      console.log('Firebase: authoritative library database loaded after login');
+      return cloud;
+    } catch (error) {
+      console.error('Firebase cloud database load after login failed:', error);
+      throw error;
     }
-
-    if (!Array.isArray(cloud.users)) cloud.users = [];
-    if (!Array.isArray(cloud.books)) cloud.books = [];
-    if (!Array.isArray(cloud.students)) cloud.students = [];
-    if (!Array.isArray(cloud.loans)) cloud.loans = [];
-    if (!Array.isArray(cloud.notifications)) cloud.notifications = [];
-    if (!Array.isArray(cloud.audit)) cloud.audit = [];
-
-    let cloudUser = cloud.users.find(
-      u => String(u.email || '').trim().toLowerCase() === email
-    );
-
-    /*
-     * If the profile exists only in this browser, migrate it.
-     */
-    if (!cloudUser && localDB && Array.isArray(localDB.users)) {
-      const local = localDB.users.find(
-        u => String(u.email || '').trim().toLowerCase() === email
-      );
-
-      if (local) {
-        cloudUser = { ...local };
-        delete cloudUser.password;
-        cloudUser.uid = window.firebaseAuth.currentUser.uid;
-
-        cloud.users.push(cloudUser);
-
-        if (String(local.role || '').toLowerCase() === 'student') {
-          const localStudent = (localDB.students || []).find(
-            s =>
-              String(s.studentId || '').toLowerCase() ===
-              String(local.studentId || '').toLowerCase()
-          );
-
-          if (
-            localStudent &&
-            !cloud.students.some(
-              s =>
-                String(s.studentId || '').toLowerCase() ===
-                String(localStudent.studentId || '').toLowerCase()
-            )
-          ) {
-            cloud.students.push({ ...localStudent });
-          }
-        }
-
-        console.log('Firebase: migrated local account into library/state');
-      }
-    }
-
-    /*
-     * Also try the dedicated Firestore collections created by older
-     * versions of the bridge. This lets an account recover even when
-     * library/state itself does not contain the profile.
-     */
-    if (!cloudUser) {
-      const collections = [
-        ['students', 'student'],
-        ['teachers', 'teacher'],
-        ['admins', 'admin']
-      ];
-
-      for (const [collectionName, role] of collections) {
-        try {
-          const snap = await window.firebaseDb
-            .collection(collectionName)
-            .where('email', '==', email)
-            .limit(1)
-            .get();
-
-          if (!snap.empty) {
-            const profile = snap.docs[0].data() || {};
-            cloudUser = {
-              ...profile,
-              email,
-              role: profile.role || role,
-              uid: window.firebaseAuth.currentUser.uid,
-              id: profile.id ?? window.firebaseAuth.currentUser.uid
-            };
-            delete cloudUser.password;
-            cloud.users.push(cloudUser);
-
-            if (role === 'student' && profile.studentId) {
-              if (!cloud.students.some(
-                s => String(s.studentId) === String(profile.studentId)
-              )) {
-                cloud.students.push({
-                  id: profile.studentRecordId || profile.id || Date.now(),
-                  studentId: profile.studentId,
-                  name: profile.name || '',
-                  department: profile.department || '',
-                  semester: profile.semester || '',
-                  mobile: profile.mobile || '',
-                  email,
-                  joined: profile.joined || new Date().toISOString().slice(0, 10)
-                });
-              }
-            }
-
-            break;
-          }
-        } catch (error) {
-          console.warn(`Could not query ${collectionName}:`, error);
-        }
-      }
-    }
-
-    if (!cloudUser) {
-      throw new Error(
-        'Firebase login succeeded, but no library profile was found for this email. ' +
-        'Create the account from this app once, or sign in on the device where the account was created.'
-      );
-    }
-
-    cloudUser.uid = window.firebaseAuth.currentUser.uid;
-
-    /*
-     * Write the migrated/updated state back to Firestore. This is the
-     * critical step that makes the account available on other devices.
-     */
-    await window.firebaseDb
-      .collection('library')
-      .doc('state')
-      .set({
-        data: cloud,
-        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-
-    if (typeof window.setLibraryDB === 'function') {
-      window.setLibraryDB(cloud);
-    } else {
-      window.db = cloud;
-      localStorage.setItem(
-        'munvarSmartLibraryV3',
-        JSON.stringify(cloud)
-      );
-    }
-
-    console.log('Firebase: authoritative library database loaded/migrated after login');
-    return cloud;
   }
 
   /* ---------------------------------------------------------
@@ -405,27 +251,127 @@
     if (!cloudReady()) return false;
 
     try {
-      const credential =
-        await window.firebaseAuth.signInWithEmailAndPassword(email, password);
+      // Capture the legacy/local profile BEFORE loading cloud state.
+      // loadCloudStateAfterAuth() replaces window.db with Firestore data, so
+      // looking up the old profile afterwards can incorrectly return null.
+      const legacyBeforeCloud = localPass(email, password) || localUser(email);
 
-      const cloud = await loadCloudStateAfterAuth();
+      let credential;
+      try {
+        credential = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
+      } catch (authError) {
+        // Older versions of Smart Library created users only in localStorage.
+        // If this is one of those legacy accounts AND the supplied password
+        // matches the local record, provision the same account in Firebase Auth.
+        // This converts the old account to a real cloud-authenticated account.
+        if (authError?.code === 'auth/invalid-credential' || authError?.code === 'auth/user-not-found') {
+          const legacy = localPass(email, password);
+          if (legacy) {
+            try {
+              credential = await window.firebaseAuth.createUserWithEmailAndPassword(email, password);
+            } catch (createError) {
+              // If the email already exists, the password simply does not match
+              // Firebase. Never overwrite or reset an existing account here.
+              if (createError?.code === 'auth/email-already-in-use') {
+                throw authError;
+              }
+              throw createError;
+            }
+          } else {
+            throw authError;
+          }
+        } else {
+          throw authError;
+        }
+      }
 
+      // Authentication succeeded. Do NOT fall back to localStorage if the
+      // Firestore read fails; doing so could display stale phone data and then
+      // overwrite the cloud database with that stale data.
+      let cloud;
+      try {
+        cloud = await loadCloudStateAfterAuth();
+      } catch (cloudError) {
+        // A newly provisioned legacy account may not have a cloud state yet.
+        // Seed library/state from the current library DB once, then reload it.
+        const localDb = typeof window.getLibraryDB === 'function' ? window.getLibraryDB() : window.db;
+        if (localDb && Array.isArray(localDb.users) && Array.isArray(localDb.books)) {
+          await window.firebaseDb.collection('library').doc('state').set({
+            data: localDb,
+            updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: false });
+          cloud = await loadCloudStateAfterAuth();
+        } else {
+          throw cloudError;
+        }
+      }
       const cloudUser = cloud.users.find(
-        u =>
-          String(u.email || '').trim().toLowerCase() ===
-          String(email).trim().toLowerCase()
+        u => String(u.email || '').trim().toLowerCase() === String(email).trim().toLowerCase()
       );
 
       if (!cloudUser) {
-        throw new Error('Library profile could not be linked to this Firebase account.');
+        // IMPORTANT: library/state is the authoritative database, but an older
+        // cloud copy can pre-date a newly registered account. Recover the user
+        // from the browser copy first, then from the separate students collection.
+        let legacy = legacyBeforeCloud;
+
+        // If the browser copy was already replaced by an older cloud state,
+        // recover the student profile directly from Firestore.
+        if (!legacy) {
+          try {
+            const studentSnap = await window.firebaseDb.collection('students')
+              .where('email', '==', String(email).trim().toLowerCase())
+              .limit(1).get();
+            if (!studentSnap.empty) {
+              const student = studentSnap.docs[0].data();
+              legacy = {
+                id: student.id || student.studentId || credential.user.uid,
+                email: student.email || email,
+                role: 'student',
+                name: student.name || credential.user.displayName || email.split('@')[0],
+                studentId: student.studentId || student.id || credential.user.uid,
+                department: student.department || '',
+                semester: student.semester || '',
+                mobile: student.mobile || '',
+                active: true
+              };
+            }
+          } catch (lookupError) {
+            console.warn('Firebase student profile lookup failed:', lookupError);
+          }
+        }
+
+        if (!legacy) {
+          throw new Error('Firebase login succeeded, but no library profile was found for this email. Create the student account again from this version so it is registered in Firebase and library/state.');
+        }
+
+        // Link the authenticated Firebase UID to the library profile.
+        const linkedUser = { ...legacy, uid: credential.user.uid, email };
+        delete linkedUser.password;
+        cloud.users = Array.isArray(cloud.users) ? cloud.users : [];
+        cloud.users.push(linkedUser);
+
+        await window.firebaseDb.collection('library').doc('state').set({
+          data: cloud,
+          updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        // Keep the in-memory DB consistent with what was just saved.
+        if (typeof window.setLibraryDB === 'function') window.setLibraryDB(cloud);
       }
 
+      const finalUser = cloud.users.find(
+        u => String(u.email || '').trim().toLowerCase() === String(email).trim().toLowerCase()
+      );
+
       openWithUser({
-        ...cloudUser,
+        ...finalUser,
         uid: credential.user.uid,
-        id: cloudUser.id ?? credential.user.uid
+        id: finalUser.id ?? credential.user.uid
       });
 
+      // Keep the separate Firebase collections in sync after the authoritative
+      // state has been loaded. The main database remains library/state.
       await syncDatabaseToFirebase();
       return true;
 
@@ -438,33 +384,6 @@
       return false;
     }
   }
-
-
-  /* ---------------------------------------------------------
-     FIREBASE ACCOUNT CREATION
-     New student/teacher accounts are created in Firebase Auth first,
-     then their library profile is saved to library/state.
-  --------------------------------------------------------- */
-
-  window.createFirebaseAccount = async function(email, password) {
-    if (!cloudReady()) return null;
-
-    try {
-      const credential =
-        await window.firebaseAuth.createUserWithEmailAndPassword(
-          email,
-          password
-        );
-
-      return credential.user;
-    } catch (error) {
-      /*
-       * If the Auth account already exists, do not silently create a
-       * different account. The caller can show the real Firebase error.
-       */
-      throw error;
-    }
-  };
 
   /* ---------------------------------------------------------
      LOGIN FORM

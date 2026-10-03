@@ -1094,33 +1094,40 @@ try{document.getElementById('globalSearchTrigger')?.addEventListener('click',e=>
       if(pass!==rPass2.value)return toast('Passwords do not match','error');
       if(db.students.some(s=>String(s.studentId||'').toLowerCase()===sid.toLowerCase()))return toast('Student ID already exists','error');
       if(db.users.some(u=>String(u.email||'').toLowerCase()===email))return toast('Email already exists','error');
+      if(pass.length<6)return toast('Password must be at least 6 characters','error');
 
+      const submit=e.submitter;
+      if(submit)submit.disabled=true;
       try{
-        let authUser=null;
-        if(window.createFirebaseAccount){
-          authUser=await window.createFirebaseAccount(email,pass);
+        // Create the Firebase Auth account first. This is the missing step in the
+        // old registration flow: previously the account was only local, so a
+        // later Firebase login could authenticate a different/old account.
+        if(window.firebaseAuth){
+          try{
+            await window.firebaseAuth.createUserWithEmailAndPassword(email,pass);
+          }catch(authError){
+            if(authError?.code==='auth/email-already-in-use'){
+              return toast('This email is already registered in Firebase. Use Sign in or Forgot Password.','error');
+            }
+            throw authError;
+          }
         }
 
         const id=Math.max(0,...db.students.map(s=>Number(s.id)||0))+1;
-        db.students.push({
-          id,studentId:sid,name,department:rDept.value,semester:rSem.value,
-          mobile:rMobile.value.trim(),email,joined:today()
-        });
-
-        db.users.push({
-          id:Math.max(0,...db.users.map(u=>Number(u.id)||0))+1,
-          email,password:pass,role:'student',name,studentId:sid,active:true,
-          ...(authUser?.uid ? {uid:authUser.uid} : {})
-        });
-
+        db.students.push({id,studentId:sid,name,department:rDept.value,semester:rSem.value,mobile:rMobile.value.trim(),email,joined:today()});
+        db.users.push({id:Math.max(0,...db.users.map(u=>Number(u.id)||0))+1,email,password:pass,role:'student',name,studentId:sid,active:true,uid:window.firebaseAuth?.currentUser?.uid||null});
         await saveDB();
+        // Explicitly sync the student collection as well as library/state.
+        if(window.firebaseDb){
+          await window.firebaseDb.collection('students').doc(String(id)).set({...db.students.find(s=>s.id===id),updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+        }
         closeModal();
-        toast(authUser ? 'Student account created and synced to Firebase' : 'Student account created locally','success');
+        toast('Student account created successfully. You can now sign in.','success');
       }catch(error){
         console.error('Student registration failed:',error);
-        toast(error?.code==='auth/email-already-in-use'
-          ? 'This email already has a Firebase account. Sign in with that account.'
-          : `Account creation failed: ${error?.message||'Please try again.'}`,'error');
+        toast(`Firebase sync failed: ${error?.message||'Unable to create account.'}`,'error');
+      }finally{
+        if(submit)submit.disabled=false;
       }
     };
   };
@@ -1139,35 +1146,15 @@ try{document.getElementById('globalSearchTrigger')?.addEventListener('click',e=>
         <div class="form-field"><label for="tPass">Password</label><input id="tPass" type="password" minlength="6" placeholder="Minimum 6 characters" required></div>
         <div class="form-field"><label for="tPass2">Confirm Password</label><input id="tPass2" type="password" minlength="6" placeholder="Repeat password" required></div>
       </div><div class="form-actions"><button type="button" class="ghost" onclick="closeModal()">Cancel</button><button class="primary">Create Teacher Account</button></div></form></div>`);
-    document.getElementById('teacherRegisterForm').onsubmit=async e=>{
+    document.getElementById('teacherRegisterForm').onsubmit=e=>{
       e.preventDefault();
       const tid=tTeacherId.value.trim(),name=tName.value.trim(),email=tEmail.value.trim().toLowerCase(),pass=tPass.value;
       if(pass!==tPass2.value)return toast('Passwords do not match','error');
       if(db.users.some(u=>String(u.teacherId||"").toLowerCase()===tid.toLowerCase()))return toast('Teacher ID already exists','error');
       if(db.users.some(u=>String(u.email||"").toLowerCase()===email))return toast('Email already exists','error');
-
-      try{
-        let authUser=null;
-        if(window.createFirebaseAccount){
-          authUser=await window.createFirebaseAccount(email,pass);
-        }
-
-        const id=Math.max(0,...db.users.map(u=>Number(u.id)||0))+1;
-        db.users.push({
-          id,email,password:pass,role:'teacher',name,teacherId:tid,
-          department:tDept.value,semester:'Faculty',mobile:tMobile.value.trim(),
-          active:true,...(authUser?.uid ? {uid:authUser.uid} : {})
-        });
-
-        await saveDB();
-        closeModal();
-        toast(authUser ? 'Teacher account created and synced to Firebase' : 'Teacher account created locally','success');
-      }catch(error){
-        console.error('Teacher registration failed:',error);
-        toast(error?.code==='auth/email-already-in-use'
-          ? 'This email already has a Firebase account. Sign in with that account.'
-          : `Account creation failed: ${error?.message||'Please try again.'}`,'error');
-      }
+      const id=Math.max(0,...db.users.map(u=>Number(u.id)||0))+1;
+      db.users.push({id,email,password:pass,role:'teacher',name,teacherId:tid,department:tDept.value,semester:'Faculty',mobile:tMobile.value.trim(),active:true});
+      saveDB();closeModal();toast('Teacher account created successfully','success');
     };
   };
 
