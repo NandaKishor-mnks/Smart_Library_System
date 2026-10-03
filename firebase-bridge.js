@@ -213,133 +213,211 @@
       throw new Error('Firebase authentication is not active.');
     }
 
+    const email = String(window.firebaseAuth.currentUser.email || '').trim().toLowerCase();
+    const localDB =
+      typeof window.getLibraryDB === 'function'
+        ? window.getLibraryDB()
+        : window.db;
+
+    let cloud = null;
+
     try {
       const snapshot = await window.firebaseDb
         .collection('library')
         .doc('state')
         .get({ source: 'server' });
 
-      if (!snapshot.exists || !snapshot.data()?.data) {
-        throw new Error('Firestore document library/state was not found.');
+      if (snapshot.exists && snapshot.data()?.data) {
+        cloud = snapshot.data().data;
       }
-
-      const cloud = snapshot.data().data;
-
-      if (!Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
-        throw new Error('Firestore library/state contains an invalid database structure.');
-      }
-
-      if (typeof window.setLibraryDB === 'function') {
-        window.setLibraryDB(cloud);
-      } else {
-        window.db = cloud;
-      }
-
-      console.log('Firebase: authoritative library database loaded after login');
-      return cloud;
     } catch (error) {
-      console.error('Firebase cloud database load after login failed:', error);
-      throw error;
+      console.warn('Firestore library/state read failed:', error);
     }
+
+    /*
+     * IMPORTANT:
+     * Older versions of this project created the account in browser
+     * localStorage but did not put the newly-created user into Firestore.
+     * That is why Firebase Auth could succeed while library/state did not
+     * contain the account.
+     *
+     * When that happens, migrate the local profile into the cloud database
+     * once. After the migration, every phone/laptop uses library/state.
+     */
+    if (!cloud || !Array.isArray(cloud.users) || !Array.isArray(cloud.books)) {
+      if (
+        localDB &&
+        Array.isArray(localDB.users) &&
+        Array.isArray(localDB.books)
+      ) {
+        cloud = structuredClone(localDB);
+      } else {
+        throw new Error('Firestore library/state was not found and no local library database is available.');
+      }
+    }
+
+    if (!Array.isArray(cloud.users)) cloud.users = [];
+    if (!Array.isArray(cloud.books)) cloud.books = [];
+    if (!Array.isArray(cloud.students)) cloud.students = [];
+    if (!Array.isArray(cloud.loans)) cloud.loans = [];
+    if (!Array.isArray(cloud.notifications)) cloud.notifications = [];
+    if (!Array.isArray(cloud.audit)) cloud.audit = [];
+
+    let cloudUser = cloud.users.find(
+      u => String(u.email || '').trim().toLowerCase() === email
+    );
+
+    /*
+     * If the profile exists only in this browser, migrate it.
+     */
+    if (!cloudUser && localDB && Array.isArray(localDB.users)) {
+      const local = localDB.users.find(
+        u => String(u.email || '').trim().toLowerCase() === email
+      );
+
+      if (local) {
+        cloudUser = { ...local };
+        delete cloudUser.password;
+        cloudUser.uid = window.firebaseAuth.currentUser.uid;
+
+        cloud.users.push(cloudUser);
+
+        if (String(local.role || '').toLowerCase() === 'student') {
+          const localStudent = (localDB.students || []).find(
+            s =>
+              String(s.studentId || '').toLowerCase() ===
+              String(local.studentId || '').toLowerCase()
+          );
+
+          if (
+            localStudent &&
+            !cloud.students.some(
+              s =>
+                String(s.studentId || '').toLowerCase() ===
+                String(localStudent.studentId || '').toLowerCase()
+            )
+          ) {
+            cloud.students.push({ ...localStudent });
+          }
+        }
+
+        console.log('Firebase: migrated local account into library/state');
+      }
+    }
+
+    /*
+     * Also try the dedicated Firestore collections created by older
+     * versions of the bridge. This lets an account recover even when
+     * library/state itself does not contain the profile.
+     */
+    if (!cloudUser) {
+      const collections = [
+        ['students', 'student'],
+        ['teachers', 'teacher'],
+        ['admins', 'admin']
+      ];
+
+      for (const [collectionName, role] of collections) {
+        try {
+          const snap = await window.firebaseDb
+            .collection(collectionName)
+            .where('email', '==', email)
+            .limit(1)
+            .get();
+
+          if (!snap.empty) {
+            const profile = snap.docs[0].data() || {};
+            cloudUser = {
+              ...profile,
+              email,
+              role: profile.role || role,
+              uid: window.firebaseAuth.currentUser.uid,
+              id: profile.id ?? window.firebaseAuth.currentUser.uid
+            };
+            delete cloudUser.password;
+            cloud.users.push(cloudUser);
+
+            if (role === 'student' && profile.studentId) {
+              if (!cloud.students.some(
+                s => String(s.studentId) === String(profile.studentId)
+              )) {
+                cloud.students.push({
+                  id: profile.studentRecordId || profile.id || Date.now(),
+                  studentId: profile.studentId,
+                  name: profile.name || '',
+                  department: profile.department || '',
+                  semester: profile.semester || '',
+                  mobile: profile.mobile || '',
+                  email,
+                  joined: profile.joined || new Date().toISOString().slice(0, 10)
+                });
+              }
+            }
+
+            break;
+          }
+        } catch (error) {
+          console.warn(`Could not query ${collectionName}:`, error);
+        }
+      }
+    }
+
+    if (!cloudUser) {
+      throw new Error(
+        'Firebase login succeeded, but no library profile was found for this email. ' +
+        'Create the account from this app once, or sign in on the device where the account was created.'
+      );
+    }
+
+    cloudUser.uid = window.firebaseAuth.currentUser.uid;
+
+    /*
+     * Write the migrated/updated state back to Firestore. This is the
+     * critical step that makes the account available on other devices.
+     */
+    await window.firebaseDb
+      .collection('library')
+      .doc('state')
+      .set({
+        data: cloud,
+        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+    if (typeof window.setLibraryDB === 'function') {
+      window.setLibraryDB(cloud);
+    } else {
+      window.db = cloud;
+      localStorage.setItem(
+        'munvarSmartLibraryV3',
+        JSON.stringify(cloud)
+      );
+    }
+
+    console.log('Firebase: authoritative library database loaded/migrated after login');
+    return cloud;
   }
 
   /* ---------------------------------------------------------
      FIREBASE LOGIN
   --------------------------------------------------------- */
 
-  async function findProfileInCollections(email) {
-    const normalized = String(email || '').trim().toLowerCase();
-    const names = ['students', 'teachers', 'admins'];
-
-    for (const name of names) {
-      try {
-        const snap = await window.firebaseDb.collection(name)
-          .where('email', '==', normalized).limit(1).get();
-        if (!snap.empty) return { collection: name, profile: snap.docs[0].data() };
-      } catch (error) {
-        console.warn(`Firebase profile lookup failed for ${name}:`, error);
-      }
-    }
-    return null;
-  }
-
-  async function repairMissingLibraryUser(cloud, email, cachedUser) {
-    const normalized = String(email || '').trim().toLowerCase();
-    let profile = null;
-
-    // First use a profile already stored in a Firebase collection.
-    const cloudProfile = await findProfileInCollections(normalized);
-    if (cloudProfile?.profile) profile = { ...cloudProfile.profile };
-
-    // If the account was created on this browser before the Firebase bridge was
-    // installed, recover its library profile from the local cache.
-    if (!profile && cachedUser) profile = { ...cachedUser };
-
-    if (!profile) return null;
-
-    profile.email = normalized;
-    profile.uid = window.firebaseAuth.currentUser?.uid || profile.uid;
-    if (!profile.id) profile.id = profile.uid;
-
-    if (!Array.isArray(cloud.users)) cloud.users = [];
-    const index = cloud.users.findIndex(
-      u => String(u.email || '').trim().toLowerCase() === normalized
-    );
-
-    if (index >= 0) cloud.users[index] = { ...cloud.users[index], ...profile };
-    else cloud.users.push(profile);
-
-    // Also restore the student record when it exists in the local cache.
-    if (String(profile.role || '').toLowerCase() === 'student' && cachedUser && Array.isArray(window.getLibraryDB?.()?.students)) {
-      const cachedDb = window.getLibraryDB();
-      const student = cachedDb.students.find(s =>
-        String(s.email || '').trim().toLowerCase() === normalized ||
-        String(s.studentId || '') === String(profile.studentId || '')
-      );
-      if (student) {
-        if (!Array.isArray(cloud.students)) cloud.students = [];
-        const si = cloud.students.findIndex(s => String(s.email || '').trim().toLowerCase() === normalized);
-        if (si >= 0) cloud.students[si] = { ...cloud.students[si], ...student };
-        else cloud.students.push(student);
-      }
-    }
-
-    await window.firebaseDb.collection('library').doc('state').set({
-      data: cloud,
-      updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    if (typeof window.setLibraryDB === 'function') window.setLibraryDB(cloud);
-    else window.db = cloud;
-
-    return cloud.users.find(
-      u => String(u.email || '').trim().toLowerCase() === normalized
-    );
-  }
-
   async function firebaseLogin(email, password) {
     if (!cloudReady()) return false;
 
     try {
-      // Keep the browser cache before loading the authoritative cloud state so
-      // an account created in an older version can be repaired automatically.
-      const cachedUser = localUser(email);
-      const credential = await window.firebaseAuth.signInWithEmailAndPassword(email, password);
+      const credential =
+        await window.firebaseAuth.signInWithEmailAndPassword(email, password);
 
       const cloud = await loadCloudStateAfterAuth();
-      let cloudUser = cloud.users.find(
-        u => String(u.email || '').trim().toLowerCase() === String(email).trim().toLowerCase()
+
+      const cloudUser = cloud.users.find(
+        u =>
+          String(u.email || '').trim().toLowerCase() ===
+          String(email).trim().toLowerCase()
       );
 
-      // Firebase Auth and the library profile are two separate records. If Auth
-      // succeeds but the library profile is missing, repair the profile instead
-      // of showing the confusing "not present" error.
       if (!cloudUser) {
-        cloudUser = await repairMissingLibraryUser(cloud, email, cachedUser);
-      }
-
-      if (!cloudUser) {
-        throw new Error('Firebase account found, but no library profile exists for this email. Please create the account from the Smart Library registration form.');
+        throw new Error('Library profile could not be linked to this Firebase account.');
       }
 
       openWithUser({
@@ -360,6 +438,33 @@
       return false;
     }
   }
+
+
+  /* ---------------------------------------------------------
+     FIREBASE ACCOUNT CREATION
+     New student/teacher accounts are created in Firebase Auth first,
+     then their library profile is saved to library/state.
+  --------------------------------------------------------- */
+
+  window.createFirebaseAccount = async function(email, password) {
+    if (!cloudReady()) return null;
+
+    try {
+      const credential =
+        await window.firebaseAuth.createUserWithEmailAndPassword(
+          email,
+          password
+        );
+
+      return credential.user;
+    } catch (error) {
+      /*
+       * If the Auth account already exists, do not silently create a
+       * different account. The caller can show the real Firebase error.
+       */
+      throw error;
+    }
+  };
 
   /* ---------------------------------------------------------
      LOGIN FORM
